@@ -1,13 +1,20 @@
 (function () {
   "use strict";
   let S = window.SITE;
-  const vis = a => (a || []).filter(x => x && !x.hidden);
+  const ED = () => !!window.__pfEdit;               // true while the editor is on (not in preview)
+  const vis = a => (a || []).filter(x => x != null && (!x.hidden || ED()));
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => [...r.querySelectorAll(s)];
   const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const ext = h => /^https?:/.test(h || "") ? ' target="_blank" rel="noopener"' : "";
-  const md = s => esc(s).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
-    .replace(/\[(.+?)\]\((.+?)\)/g, (m, t, h) => `<a class="inline-link" href="${h}"${ext(h)}>${t}</a>`);
+  const md = s => esc(s).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/\*(?!\s)(.+?)\*/g, "<i>$1</i>")
+    .replace(/\[(.+?)\]\((.+?)\)/g, (m, t, h) => `<a class="inline-link" href="${h}"${ext(h)}>${t}</a>`).replace(/\n/g, "<br>");
+  // editor hooks: data-e = editable text path, data-li/data-ix = list item, data-lc = list container, data-m = media path
+  const E = (p, ph) => ` data-e="${p}"${ph ? ` data-ph="${esc(ph)}"` : ""}`;
+  const LI = (p, i, g) => ` data-li="${p}" data-ix="${i}"${g ? ` data-g="${g}"` : ""}`;
+  const LC = p => ` data-lc="${p}"`;
+  const ix = (arr, x) => (arr || []).indexOf(x);
+  const show = v => v || ED();                       // optional fields show (empty) while editing
   const slug = s => String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 
   /* ---------- icons (drawn for this site) ---------- */
@@ -34,20 +41,57 @@
   const NAMES = { linkedin: "LinkedIn", x: "X", instagram: "Instagram", spark: "Luma", github: "GitHub" };
 
   /* ---------- media: image / video / gradient placeholder ---------- */
-  function media(o, cls = "", style = "", inner = "") {
+  // video links: YouTube, Vimeo, Loom -> embedded player; anything else is treated as a video file
+  function vlink(u) {
+    u = String(u || "");
+    let m = u.match(/(?:youtube\.com\/(?:watch\?(?:.*&)?v=|shorts\/|embed\/|live\/)|youtu\.be\/)([\w-]{11})/);
+    if (m) return { kind: "youtube", id: m[1], thumb: `https://i.ytimg.com/vi/${m[1]}/hqdefault.jpg` };
+    if ((m = u.match(/vimeo\.com\/(?:.*\/)?(?:video\/)?(\d{5,})/))) return { kind: "vimeo", id: m[1] };
+    if ((m = u.match(/loom\.com\/(?:share|embed)\/([\w]+)/))) return { kind: "loom", id: m[1] };
+    return null;
+  }
+  function embedSrc(v, o) {
+    const auto = o.vAuto !== false && !o.vHover, loop = o.vLoop !== false, sound = !!o.vSound;
+    if (v.kind === "youtube") return `https://www.youtube-nocookie.com/embed/${v.id}?autoplay=${auto || o.vHover ? 1 : 0}&mute=${sound ? 0 : 1}&loop=${loop ? 1 : 0}&playlist=${v.id}&controls=${sound ? 1 : 0}&playsinline=1&rel=0&modestbranding=1`;
+    if (v.kind === "vimeo") return `https://player.vimeo.com/video/${v.id}?autoplay=${auto || o.vHover ? 1 : 0}&muted=${sound ? 0 : 1}&loop=${loop ? 1 : 0}${sound ? "" : "&background=1"}`;
+    return `https://www.loom.com/embed/${v.id}?autoplay=${auto || o.vHover ? 1 : 0}&muted=${sound ? 0 : 1}&hide_owner=true&hide_share=true&hide_title=true&hideEmbedTopBar=true`;
+  }
+  function media(o, cls = "", style = "", inner = "", mp = "") {
     o = typeof o === "string" ? { title: o } : (o || {});
     const real = o.image || o.video;
     const st = `--h:${o.hue ?? (Math.abs([...String(o.title || "x")].reduce((a, c) => a * 31 + c.charCodeAt(0), 7)) % 360)};${style}`;
-    let el = "";
-    if (o.video) el = `<video src="${esc(o.video)}" autoplay muted loop playsinline></video>`;
-    else if (o.image) el = `<img src="${esc(o.image)}" alt="${esc(o.title || "")}" loading="lazy" decoding="async">`;
-    return `<div class="media ${real ? "" : "ph loaded"} ${o.gray ? "gray" : ""} ${cls}" style="${st}">${real ? '<div class="shimmer"></div>' : ""}${el}${inner}</div>`;
+    let el = "", extra = "";
+    const v = o.video && vlink(o.video);
+    const poster = o.poster || (v && v.thumb) || "";
+    if (v) {
+      const src = embedSrc(v, o);
+      el = (poster ? `<img class="poster" src="${esc(poster)}" alt="" loading="lazy">` : "") +
+        (o.vHover ? "" : `<iframe src="${esc(src)}" title="${esc(o.title || "Video")}" allow="autoplay; fullscreen; picture-in-picture" loading="lazy" ${o.vSound ? "" : 'tabindex="-1"'}></iframe>`);
+      extra = ` has-if${o.vSound ? " live" : ""}" data-embed="${esc(src)}`;
+    } else if (o.video) {
+      const auto = o.vAuto !== false && !o.vHover;
+      el = `<video src="${esc(o.video)}"${poster ? ` poster="${esc(poster)}"` : ""}${auto ? " autoplay" : ""}${o.vSound ? " controls" : " muted"}${o.vLoop !== false ? " loop" : ""} playsinline preload="metadata"${o.vHover ? " data-hover" : ""}></video>`;
+    } else if (o.image) el = `<img src="${esc(o.image)}" alt="${esc(o.title || "")}" loading="lazy" decoding="async">`;
+    return `<div class="media ${real ? "" : "ph loaded"} ${o.gray ? "gray" : ""} ${cls}${extra}" style="${st}"${mp ? ` data-m="${mp}"` : ""}>${real ? '<div class="shimmer"></div>' : ""}${el}${inner}</div>`;
   }
   function wireMedia(root) {
-    $$(".media img, .media video", root).forEach(m => {
-      const done = () => m.parentNode.classList.add("loaded");
-      if (m.tagName === "IMG" ? m.complete && m.naturalWidth : m.readyState >= 2) done();
-      else { m.addEventListener(m.tagName === "IMG" ? "load" : "loadeddata", done, { once: true }); m.addEventListener("error", done, { once: true }); }
+    $$(".media > img, .media > video, .media > iframe", root).forEach(m => {
+      const box = m.parentNode;
+      const done = () => box.classList.add("loaded");
+      if (m.tagName === "IFRAME") { m.addEventListener("load", () => { m.classList.add("on"); done(); }, { once: true }); if (box.querySelector(".poster")) return; setTimeout(done, 2500); return; }
+      if (m.tagName === "IMG" ? m.complete && m.naturalWidth : m.readyState >= 1) done();
+      else { m.addEventListener(m.tagName === "IMG" ? "load" : "loadedmetadata", done, { once: true }); m.addEventListener("error", done, { once: true }); }
+    });
+    // play-on-hover videos
+    $$(".media", root).forEach(box => {
+      const vid = box.querySelector("video[data-hover]"), emb = box.classList.contains("has-if") && !box.querySelector("iframe") && box.dataset.embed;
+      if (!vid && !emb) return;
+      const zone = box.closest(".card, .l-card, .art-btn, .photo, .also") || box;
+      if (vid) { zone.addEventListener("mouseenter", () => { vid.play().catch(() => {}); }); zone.addEventListener("mouseleave", () => { vid.pause(); }); }
+      else {
+        zone.addEventListener("mouseenter", () => { if (box.querySelector("iframe")) return; box.insertAdjacentHTML("beforeend", `<iframe src="${box.dataset.embed}" allow="autoplay; fullscreen" tabindex="-1"></iframe>`); const f = box.querySelector("iframe"); f.addEventListener("load", () => f.classList.add("on"), { once: true }); });
+        zone.addEventListener("mouseleave", () => { const f = box.querySelector("iframe"); if (f) f.remove(); });
+      }
     });
   }
 
@@ -61,13 +105,18 @@
   const d = (i, step = 0.08, max = 0.8) => `transition-delay:${Math.min(i * step, max).toFixed(2)}s`;
 
   /* ---------- shell: header + footer ---------- */
+  function logoHTML() {
+    if (S.logo) return `<img src="${esc(S.logo)}" alt="">`;
+    const c = S.logoColor || "", sh = S.logoShape || "stamp";
+    return `<div class="stamp round ${sh === "stamp" ? "" : "sh-" + sh}"${c ? ` style="color:${esc(c)};border-color:${esc(c)}"` : ""}>${esc(S.initials)}</div>`;
+  }
   function renderShell() {
-  const logo = S.logo ? `<img src="${esc(S.logo)}" alt="">` : `<div class="stamp round">${esc(S.initials)}</div>`;
+  const logo = logoHTML();
   $("#header").innerHTML = `
     <div class="hero">
-      <div class="topbar"><a class="logo" href="#design-system" data-route="design-system" aria-label="Open the design system">${logo}</a></div>
+      <div class="topbar"><a class="logo" href="#design-system" data-route="design-system" data-logo aria-label="Open the design system">${logo}</a></div>
       <div class="intro">
-        <p class="name"><span id="nm">${esc(S.name)}</span><small id="born" hidden>${esc(S.bornYear)}</small></p>
+        <p class="name"><span id="nm"${E("name", "Your name")}>${esc(S.name)}</span><small id="born" hidden>${esc(S.bornYear)}</small></p>
         <div class="tagline" id="tag"></div>
       </div>
     </div>
@@ -82,19 +131,19 @@
     </div>`;
 
   const sm = `<div class="foot-bottom reveal-fade" style="transition-delay:.2s">
-      <p>${md(S.credit)}</p>
-      <a class="cl" href="${esc(S.changelog.href)}"${ext(S.changelog.href)}>${esc(S.changelog.label)}</a></div>`;
+      <p${E("credit", "Footer note")}>${md(S.credit)}</p>
+      <a class="cl" href="${esc(S.changelog.href)}"${ext(S.changelog.href)}${E("changelog.label", "Changelog")}>${esc(S.changelog.label)}</a></div>`;
   $("#footer").innerHTML = `
     <div class="foot">
       <div class="foot-top reveal">
         <div class="rule"></div>
         <div class="foot-grid">
-          <div><a class="f-brand" href="#work" data-route="work">${S.logo ? `<img src="${esc(S.logo)}" alt="">` : `<div class="stamp round">${esc(S.initials)}</div>`}<b>${esc(S.name)}</b></a>
-            <p class="f-clock">${I.sun}<span id="clk"></span><span class="city">${esc(S.city)}</span></p></div>
+          <div><a class="f-brand" href="#work" data-route="work">${logoHTML()}<b${E("name")}>${esc(S.name)}</b></a>
+            <p class="f-clock" data-g="clock">${I.sun}<span id="clk"></span><span class="city"${E("city", "City")}>${esc(S.city)}</span></p></div>
           <div class="f-links"><a href="#work" data-route="work">Work</a><a href="#art" data-route="art">Art</a><a href="#about" data-route="about">About</a></div>
           <div class="f-contact">
-            <div><p class="chat">Let's chat!</p><a class="f-mail" href="mailto:${esc(S.email)}"><span>${esc(S.email)}</span>${I.arrow}</a></div>
-            <div class="socials">${vis(S.socials).map(s => `<a href="${esc(s.href)}" target="_blank" rel="noopener" aria-label="${esc(s.label || NAMES[s.icon] || s.icon)}" data-tip="${esc(s.label || NAMES[s.icon] || s.icon)}">${I[s.icon] || I.arrow}</a>`).join("")}</div>
+            <div><p class="chat"${E("chat", "Let's chat!")}>${esc(S.chat ?? "Let's chat!")}</p><a class="f-mail" href="mailto:${esc(S.email)}"><span${E("email", "you@email.com")}>${esc(S.email)}</span>${I.arrow}</a></div>
+            <div class="socials"${LC("socials")}>${vis(S.socials).map(s => `<a href="${esc(s.href)}" target="_blank" rel="noopener" aria-label="${esc(s.label || NAMES[s.icon] || s.icon)}" data-tip="${esc(s.label || NAMES[s.icon] || s.icon)}"${LI("socials", ix(S.socials, s), "social")}>${I[s.icon] || I.arrow}</a>`).join("")}</div>
           </div>
         </div>
       </div>
@@ -131,16 +180,16 @@
   const on = (el, ev, fn, o) => { el.addEventListener(ev, fn, o); cleanup.push(() => el.removeEventListener(ev, fn, o)); };
 
   function renderWork() {
-    view.innerHTML = `<div class="grid">${vis(S.projects).map((p, i) => `
-      <${p.type === "link" ? `a href="${esc(p.href || "#")}"${ext(p.href)}` : `a href="#p-${esc(p.slug)}" data-proj="${esc(p.slug)}"`} class="card" data-slug="${esc(p.slug || "")}" style="animation-delay:${(Math.floor(i / 2) * 0.06).toFixed(2)}s">
+    view.innerHTML = `<div class="grid"${LC("projects")}>${vis(S.projects).map((p, i) => { const k = ix(S.projects, p), P = "projects." + k; return `
+      <${p.type === "link" ? `a href="${esc(p.href || "#")}"${ext(p.href)}` : `a href="#p-${esc(p.slug)}" data-proj="${esc(p.slug)}"`} class="card" data-slug="${esc(p.slug || "")}" style="animation-delay:${(Math.floor(i / 2) * 0.06).toFixed(2)}s"${LI("projects", k, "project")}>
         <div class="frame">
-          ${media(p, "", "", !p.image && !p.video ? `<div class="ph-mark">${esc(p.title)}</div>` : "")}
+          ${media(p, "", "", !p.image && !p.video ? `<div class="ph-mark">${esc(p.title)}</div>` : "", P)}
           <div class="edge"></div>
-          <div class="pillwrap"><div class="pill">${esc(p.title)}<i>&nbsp;• ${esc(p.year)}</i></div></div>
+          <div class="pillwrap"><div class="pill"><span${E(P + ".title", "Title")}>${esc(p.title)}</span><i>&nbsp;• <span${E(P + ".year", "Year")}>${esc(p.year)}</span></i></div></div>
         </div>
-        <div class="below"><p class="hover-text">${esc(p.description || "")}</p>${p.type !== "case" ? `<span class="ext hover-text">${I.chain}</span>` : ""}</div>
+        <div class="below"><p class="hover-text"${E(P + ".description", "A one-line description")}>${esc(p.description || "")}</p>${p.type !== "case" ? `<span class="ext hover-text">${I.chain}</span>` : ""}</div>
         <div class="mob"><div class="l"><span>${esc(p.title)} <i>• ${esc(p.year)}</i></span>${p.type !== "case" ? `<span class="ext">${I.chain}</span>` : ""}</div>${p.description ? `<p>${esc(p.description)}</p>` : ""}</div>
-      </a>`).join("")}</div>`;
+      </a>`; }).join("")}</div>`;
   }
 
   // sidebar: items = [{label, id, count?, children?:[...]}]
@@ -188,18 +237,18 @@
   function renderArt() {
     const count = k => vis(S.artworks).filter(a => a.cat === k).length;
     const side = vis(S.artGroups).map(g => ({ id: "g-" + slug(g.label), label: g.label, children: vis(g.children).map(c => ({ id: "a-" + c.key, label: c.label, count: count(c.key) })) }));
-    const list = S.artworks.map(a => a.hidden ? { ...a, cat: "__hidden" } : a);
+    const list = S.artworks.map(a => a.hidden && !ED() ? { ...a, cat: "__hidden" } : a);
     view.innerHTML = `<div class="split">
       <aside class="side"><nav>${sideHTML(side)}</nav></aside>
       <div class="content"><div class="art-col">
-        ${vis(S.artGroups).map(g => `<div id="g-${slug(g.label)}" style="display:flex;flex-direction:column;gap:48px;scroll-margin-top:32px">${vis(g.children).map(c => `
+        ${vis(S.artGroups).map(g => { const gi = ix(S.artGroups, g); return `<div id="g-${slug(g.label)}" style="display:flex;flex-direction:column;gap:48px;scroll-margin-top:32px">${vis(g.children).map(c => { const ci = ix(g.children, c), CP = `artGroups.${gi}.children.${ci}`; return `
           <section class="art-sec" id="a-${c.key}">
-            <div class="art-head reveal-fade"><p>${esc(c.label)}</p>${c.link ? `<a class="reveal-fade" style="transition-delay:.4s" href="${esc(c.link.href)}"${ext(c.link.href)}>${esc(c.link.label)} ${I.cube}</a>` : ""}</div>
-            <div class="art-grid">${list.map((a, i) => a.cat !== c.key ? "" : `
-              <div class="art-item reveal"><button class="art-btn ptr" data-i="${i}">
-                ${media(a, "", `aspect-ratio:${a.ratio || 0.78}`)}
-                <p><b>${esc(a.title)}</b> ${esc(a.medium)}, ${esc(a.year)}</p></button></div>`).join("")}</div>
-          </section>`).join("")}</div>`).join("")}
+            <div class="art-head reveal-fade" data-g="artsec:${CP}"><p${E(CP + ".label", "Section name")}>${esc(c.label)}</p>${c.link ? `<a class="reveal-fade" style="transition-delay:.4s" href="${esc(c.link.href)}"${ext(c.link.href)}><span${E(CP + ".link.label", "Link text")}>${esc(c.link.label)}</span> ${I.cube}</a>` : ""}</div>
+            <div class="art-grid"${LC("artworks")} data-cat="${esc(c.key)}">${list.map((a, i) => a.cat !== c.key ? "" : `
+              <div class="art-item reveal"${LI("artworks", i, "artwork")}><div class="art-btn ptr" role="button" tabindex="0" data-i="${i}">
+                ${media(a, "", `aspect-ratio:${a.ratio || 0.78}`, "", "artworks." + i)}
+                <p><b${E(`artworks.${i}.title`, "Title")}>${esc(a.title)}</b> <span${E(`artworks.${i}.medium`, "Medium")}>${esc(a.medium)}</span>, <span${E(`artworks.${i}.year`, "Year")}>${esc(a.year)}</span></p></div></div>`).join("")}</div>
+          </section>`; }).join("")}</div>`; }).join("")}
       </div></div></div>`;
     $$(".art-btn", view).forEach(b => on(b, "click", () => {
       const cat = list[b.dataset.i].cat;
@@ -209,24 +258,25 @@
     wireSide(side);
   }
 
+  const shelfSel = {}; let archOpen = false;
   const OFFS = [
     [[0, -16, -2], [-8, 48, 2], [0, 64, -1.5], [16, 16, 2.5]],
     [[-8, 24, 1.5], [-24, 8, -2], [-8, 32, 2], [0, -16, -2.5]],
     [[0, 0, -2], [8, 40, 1.5], [0, 0, 2], [0, 16, -1.5]],
     [[-24, 0, 2], [-8, 48, -2], [-8, 24, 1.5], [16, -8, -2]]
   ];
-  function commHTML(c, ci, delay) {
-    const off = OFFS[ci % OFFS.length];
-    return `<div class="comm" id="c-${slug(c.name)}"><div class="reveal" style="${d(delay, 0.1)}"><div class="comm-in">
+  function commHTML(c, ci, delay, arr) {
+    const off = OFFS[ci % OFFS.length], k = ix(S[arr], c), C = `${arr}.${k}`;
+    return `<div class="comm" id="c-${slug(c.name)}"${LI(arr, k, "community")}><div class="reveal" style="${d(delay, 0.1)}"><div class="comm-in">
       <div class="comm-head">
-        <div class="comm-name">${c.logo ? `<div class="avatar"><img src="${esc(c.logo)}" alt=""></div>` : `<div class="avatar ph round" style="--h:${ci * 70 + 20}">${esc(c.name[0])}</div>`}
-          <h3>${esc(c.name)}</h3>${c.link ? `<a href="${esc(c.link)}"${ext(c.link)} aria-label="Instagram">${I.instagram}</a>` : ""}</div>
-        <p>${md(c.desc)}</p>
+        <div class="comm-name">${c.logo ? `<div class="avatar" data-m="${C}|logo" data-msmall><img src="${esc(c.logo)}" alt=""></div>` : `<div class="avatar ph round" style="--h:${ci * 70 + 20}" data-m="${C}|logo" data-msmall>${esc((c.name || "?")[0])}</div>`}
+          <h3${E(C + ".name", "Community name")}>${esc(c.name)}</h3>${c.link ? `<a href="${esc(c.link)}"${ext(c.link)} aria-label="Instagram">${I.instagram}</a>` : ""}</div>
+        <p${E(C + ".desc", "What this community is about")}>${md(c.desc)}</p>
       </div>
-      <div class="photos"><div class="photo-band">${c.photos.map((p, i) => {
-        const [x, y, r] = off[i % 4];
-        return `<div class="photo ${p.shape === "wide" ? "wide" : "tall"} ptr" data-c="${esc(c.name)}" data-p="${i}" style="transform:translate(${x}px,${y}px)">
-          <div class="tilt" style="transform:rotate(${r}deg)"><div class="pf">${media({ ...p, hue: p.hue ?? ci * 70 + i * 25 + 10 })}</div><p>${esc(p.caption)}</p></div></div>`;
+      <div class="photos"><div class="photo-band"${LC(C + ".photos")}>${vis(c.photos).map((p, i) => {
+        const [x, y, r] = off[i % 4], pk = ix(c.photos, p);
+        return `<div class="photo ${p.shape === "wide" ? "wide" : "tall"} ptr" data-c="${esc(c.name)}" data-p="${i}" style="transform:translate(${x}px,${y}px)"${LI(C + ".photos", pk, "photo")}>
+          <div class="tilt" style="transform:rotate(${r}deg)"><div class="pf">${media({ ...p, hue: p.hue ?? ci * 70 + i * 25 + 10 }, "", "", "", `${C}.photos.${pk}`)}</div><p${E(`${C}.photos.${pk}.caption`, "Caption")}>${esc(p.caption)}</p></div></div>`;
       }).join("")}</div></div>
     </div><div class="comm-rule"></div></div></div>`;
   }
@@ -249,81 +299,89 @@
       <div class="content"><div class="about-col">
         <section class="sec hi" id="hi">
           <div class="reveal"><div class="hi-left">
-            <div class="hi-photo ptr" id="hiPhoto"><div class="pol">${media({ image: H.photo, hue: 280, title: "photo" })}</div></div>
-            <div class="hi-cap">${md(H.photoCaption)}</div></div></div>
+            <div class="hi-photo ptr" id="hiPhoto"><div class="pol">${media({ image: H.photo, video: H.photoVideo, poster: H.photoPoster, vAuto: H.vAuto, vLoop: H.vLoop, vSound: H.vSound, vHover: H.vHover, hue: 280, title: "photo" }, "", "", "", "hi|photo")}</div></div>
+            <div class="hi-cap"${E("hi.photoCaption", "Photo caption")}>${md(H.photoCaption)}</div></div></div>
           <div class="hi-right">
-            <div class="reveal-fade"><h2 class="h2">${esc(H.heading)}</h2></div>
-            <div class="reveal-fade"><div class="meta">${vis(H.meta).map(m => `<span>${I[m.icon] || ""}<span>${esc(m.text)}</span></span>`).join("")}</div></div>
-            <div class="reveal-fade"><div class="prose">${vis(H.paragraphs).map(p => `<p>${md(p)}</p>`).join("")}</div></div>
+            <div class="reveal-fade"><h2 class="h2"${E("hi.heading", "Heading")}>${esc(H.heading)}</h2></div>
+            <div class="reveal-fade"><div class="meta"${LC("hi.meta")}>${vis(H.meta).map(m => `<span${LI("hi.meta", ix(H.meta, m), "meta")}>${I[m.icon] || ""}<span${E(`hi.meta.${ix(H.meta, m)}.text`, "Detail")}>${esc(m.text)}</span></span>`).join("")}</div></div>
+            <div class="reveal-fade"><div class="prose">${(H.paragraphs || []).map((p, i) => `<p${E("hi.paragraphs." + i, "Write something…")} data-para="hi.paragraphs">${md(p)}</p>`).join("")}</div></div>
           </div>
         </section>
 
         <section class="sec exp" id="experience">
-          <div class="reveal-fade"><h2>Experience</h2></div>
-          <div class="exp-list">${vis(S.experience).map((x, i) => `<div class="reveal" style="${d(i)}"><div class="exp-item">
-            ${x.logo ? `<div class="avatar"><img src="${esc(x.logo)}" alt=""></div>` : `<div class="avatar ph round ${x.gray ? "gray" : ""}" style="--h:${x.hue ?? 0}">${esc(x.org[0])}</div>`}
-            <div class="exp-t"><div class="exp-row"><b>${esc(x.org)}</b><span>${esc(x.years)}</span></div>${x.sub ? `<small>${md(x.sub)}</small>` : ""}</div>
-          </div></div>`).join("")}</div>
+          <div class="reveal-fade"><h2${E("experienceTitle", "Experience")}>${esc(S.experienceTitle ?? "Experience")}</h2></div>
+          <div class="exp-list"${LC("experience")}>${vis(S.experience).map((x, i) => { const k = ix(S.experience, x), X = "experience." + k; return `<div class="reveal" style="${d(i)}"${LI("experience", k)}><div class="exp-item">
+            ${x.logo ? `<div class="avatar" data-m="${X}|logo" data-msmall><img src="${esc(x.logo)}" alt=""></div>` : `<div class="avatar ph round ${x.gray ? "gray" : ""}" style="--h:${x.hue ?? 0}" data-m="${X}|logo" data-msmall>${esc((x.org || "?")[0])}</div>`}
+            <div class="exp-t"><div class="exp-row"><b${E(X + ".org", "Company")}>${esc(x.org)}</b><span${E(X + ".years", "Years")}>${esc(x.years)}</span></div>${show(x.sub) ? `<small${E(X + ".sub", "Optional detail")}>${md(x.sub)}</small>` : ""}</div>
+          </div></div>`; }).join("")}</div>
         </section>
 
         <section class="sec comm-sec" id="community">
-          <div class="reveal-fade"><div class="sec-head"><h2>${esc(S.communitiesTitle)}</h2><p>${esc(S.communitiesSub)} ${I.heart}</p></div></div>
+          <div class="reveal-fade"><div class="sec-head"><h2${E("communitiesTitle", "Title")}>${esc(S.communitiesTitle)}</h2><p><span${E("communitiesSub", "Subtitle")}>${esc(S.communitiesSub)}</span> ${I.heart}</p></div></div>
           <div class="comm-list">
-            ${vis(S.communities).map((c, i) => commHTML(c, i, i)).join("")}
-            ${vis(S.archive).length ? `<div class="archive s-group" id="archive">
+            <div class="comm-list" style="padding:0"${LC("communities")}>${vis(S.communities).map((c, i) => commHTML(c, i, i, "communities")).join("")}</div>
+            ${vis(S.archive).length || ED() ? `<div class="archive s-group ${archOpen ? "open" : ""}" id="archive">
               <button class="archive-btn ptr" id="archBtn"><span>Archive</span>${I.chev}</button>
-              <div class="collapse"><div><div>${vis(S.archive).map((c, i) => commHTML(c, i + S.communities.length, 0)).join("")}</div></div></div></div>` : ""}
+              <div class="collapse"><div><div${LC("archive")}>${vis(S.archive).map((c, i) => commHTML(c, i + S.communities.length, 0, "archive")).join("")}</div></div></div></div>` : ""}
           </div>
         </section>
 
         <section class="sec quotes" id="philosophy">
-          <div class="reveal-fade"><div class="sec-head"><h2>${esc(S.quotesTitle)}</h2><p>${esc(S.quotesSub)}</p></div></div>
-          <div class="q-grid">${vis(S.quotes).map((q, i) => `<div class="reveal" style="${d(i)};height:100%"><div class="q-card"><div class="q-in">
-            <p class="em">${esc(q.emoji)}</p><h4>${esc(q.title)}</h4><div><p class="qt">${md(q.text)}</p><p class="qa">${esc(q.author)}</p></div>
-          </div></div></div>`).join("")}</div>
+          <div class="reveal-fade"><div class="sec-head"><h2${E("quotesTitle", "Title")}>${esc(S.quotesTitle)}</h2><p${E("quotesSub", "Subtitle")}>${esc(S.quotesSub)}</p></div></div>
+          <div class="q-grid"${LC("quotes")}>${vis(S.quotes).map((q, i) => { const k = ix(S.quotes, q), Q = "quotes." + k; return `<div class="reveal" style="${d(i)};height:100%"${LI("quotes", k)}><div class="q-card"><div class="q-in">
+            <p class="em"${E(Q + ".emoji", "✦")}>${esc(q.emoji)}</p><h4${E(Q + ".title", "A short principle")}>${esc(q.title)}</h4><div><p class="qt"${E(Q + ".text", "The quote")}>${md(q.text)}</p><p class="qa"${E(Q + ".author", "Who said it")}>${esc(q.author)}</p></div>
+          </div></div></div>`; }).join("")}</div>
         </section>
 
         <section class="sec shelf" id="shelf">
-          <div class="reveal-fade"><div class="sec-head"><h2>${esc(S.shelfTitle)}</h2><p>${esc(S.shelfSub)}</p></div></div>
-          <div class="shelf-rows">${vis(S.shelves).map((s, si) => `<div class="s-row" id="s-${slug(s.name)}"><div class="reveal" style="${d(si + 1, 0.1)}">
+          <div class="reveal-fade"><div class="sec-head"><h2${E("shelfTitle", "Title")}>${esc(S.shelfTitle)}</h2><p${E("shelfSub", "Subtitle")}>${esc(S.shelfSub)}</p></div></div>
+          <div class="shelf-rows"${LC("shelves")}>${vis(S.shelves).map((s, si) => `<div class="s-row" id="s-${slug(s.name)}"${LI("shelves", ix(S.shelves, s), "shelf")}><div class="reveal" style="${d(si + 1, 0.1)}">
             <div class="s-bar"><div class="s-bar-top">
               <div class="f-pills" data-shelf="${si}"><div class="f-ind"></div>${s.filters.map((f, fi) => `<button class="f-pill ptr ${fi ? "" : "active"}" data-f="${fi}"><span>${esc(f.label)} <i>${f.items.length}</i></span></button>`).join("")}</div>
-              ${s.link ? `<a class="s-link" href="${esc(s.link.href)}"${ext(s.link.href)}>${esc(s.link.label)} ${I.arrow}</a>` : ""}
+              ${s.link ? `<a class="s-link" href="${esc(s.link.href)}"${ext(s.link.href)}><span${E(`shelves.${ix(S.shelves, s)}.link.label`, "Link")}>${esc(s.link.label)}</span> ${I.arrow}</a>` : ""}
             </div><div class="rule"></div></div>
             <div class="s-items" id="si-${si}"></div>
           </div></div>`).join("")}</div>
         </section>
 
         <section class="sec lore" id="lore">
-          <div class="reveal-fade"><div class="sec-head"><h2>${esc(S.loreTitle)}</h2><p>${esc(S.loreSub)}</p></div></div>
-          <div class="l-grid">${vis(S.lore).map((l, i) => `<div class="reveal" style="${d(i % 3)}"><a class="l-card" href="${esc(l.href || "#")}"${ext(l.href)}>
-            ${media({ hue: l.hue, gray: l.gray, title: l.title }, "", "", l.image ? `<div class="scl" style="background:url('${esc(l.image)}') center/cover"></div>` : `<div class="scl"></div>`)}
-            <div class="l-txt"><div class="l-top"><b>${esc(l.title)} <i>• ${esc(l.year)}</i></b>${I.arrow}</div><p>${md(l.desc)}</p></div>
-          </a></div>`).join("")}</div>
+          <div class="reveal-fade"><div class="sec-head"><h2${E("loreTitle", "Title")}>${esc(S.loreTitle)}</h2><p${E("loreSub", "Subtitle")}>${esc(S.loreSub)}</p></div></div>
+          <div class="l-grid"${LC("lore")}>${vis(S.lore).map((l, i) => { const k = ix(S.lore, l), L = "lore." + k; return `<div class="reveal" style="${d(i % 3)}"${LI("lore", k, "lore")}><a class="l-card" href="${esc(l.href || "#")}"${ext(l.href)}>
+            ${l.video ? media({ ...l, image: "" }, "", "", "", L) : media({ hue: l.hue, gray: l.gray, title: l.title }, "", "", l.image ? `<div class="scl" style="background:url('${esc(l.image)}') center/cover"></div>` : `<div class="scl"></div>`, L)}
+            <div class="l-txt"><div class="l-top"><b><span${E(L + ".title", "Title")}>${esc(l.title)}</span> <i>• <span${E(L + ".year", "Year")}>${esc(l.year)}</span></i></b>${I.arrow}</div><p${E(L + ".desc", "A line about it")}>${md(l.desc)}</p></div>
+          </a></div>`; }).join("")}</div>
         </section>
       </div></div></div>`;
 
     // shelves
     vis(S.shelves).forEach((s, si) => {
       const wrap = $(`.f-pills[data-shelf="${si}"]`, view), fi = $(".f-ind", wrap), box = $("#si-" + si, view);
+      const sk = ix(S.shelves, s);
       const show = (k, first) => {
+        if (!s.filters[k]) k = 0;
+        if (!s.filters[k]) { box.innerHTML = ""; return; }
+        shelfSel[sk] = k;
+        const FP = `shelves.${sk}.filters.${k}.items`;
+        box.setAttribute("data-lc", FP);
         const b = $(`.f-pill[data-f="${k}"]`, wrap);
         $$(".f-pill", wrap).forEach(x => x.classList.toggle("active", x === b));
         if (first) fi.style.transition = "none";
         fi.style.transform = `translate3d(${b.offsetLeft}px,0,0)`; fi.style.width = b.offsetWidth + "px";
         if (first) { fi.offsetWidth; fi.style.transition = ""; }
-        box.innerHTML = s.filters[k].items.slice(0, 5).map((it, i) => {
+        const items = s.filters[k].items;
+        box.innerHTML = (ED() ? items : items.slice(0, 5)).map((it, i) => {
           const o = typeof it === "string" ? { title: it } : it;
-          return `<div class="s-it ${s.shape === "square" ? "square" : "book"}" style="animation-delay:${(i * 0.04).toFixed(2)}s" title="${esc(o.title)}">${media(o)}<p>${esc(o.title)}</p></div>`;
+          if (o.hidden && !ED()) return "";
+          return `<div class="s-it ${s.shape === "square" ? "square" : "book"}" style="animation-delay:${(i * 0.04).toFixed(2)}s" title="${esc(o.title)}"${LI(FP, i)}>${media(o, "", "", "", FP + "." + i)}<p${E(typeof it === "string" ? `${FP}.${i}` : `${FP}.${i}.title`, "Title")}>${esc(o.title)}</p></div>`;
         }).join("");
         wireMedia(box);
       };
       $$(".f-pill", wrap).forEach(b => on(b, "click", () => show(+b.dataset.f)));
-      requestAnimationFrame(() => show(0, true));
+      requestAnimationFrame(() => show(shelfSel[sk] || 0, true));
     });
     // archive toggle
     const ab = $("#archBtn", view);
-    if (ab) on(ab, "click", () => $("#archive", view).classList.toggle("open"));
+    if (ab) on(ab, "click", () => { archOpen = $("#archive", view).classList.toggle("open"); });
     // lightboxes
     on($("#hiPhoto", view), "click", () => openLB([{ image: H.photo, hue: 280, ratio: 0.75, cap: md(H.photoCaption) }], 0));
     $$(".photo", view).forEach(p => on(p, "click", () => {
@@ -387,23 +445,25 @@
 
   /* ---------- project windows ---------- */
   const host = h => { try { return new URL(h).hostname.replace(/^www\./, ""); } catch { return h; } };
-  const paras = arr => (arr || []).map(p => `<p>${md(p)}</p>`).join("");
-  const stackHTML = st => `<div class="stack">${(st || []).map(([k, v]) => `<div><b>${esc(k)}</b><div>${v.map(x => `<span>${esc(x)}</span>`).join("")}</div></div>`).join("")}</div>`;
-  const viewBtn = v => v ? `<a class="btn-p" href="${esc(v.href)}" target="_blank" rel="noopener"><span>${esc(v.label || "View")}</span>${v.icon && I[v.icon] ? I[v.icon] : ""}${I.arrow}</a>` : "";
-  const R_ = (cls, inner, fade) => `<div class="cs"><div class="${fade ? "reveal-fade" : "reveal"}">${`<div class="${cls}">${inner}</div>`}</div></div>`;
+  const paras = (arr, P) => (arr || []).map((p, i) => `<p${P ? E(`${P}.${i}`, "Write something…") + ` data-para="${P}"` : ""}>${md(p)}</p>`).join("") || (P && ED() ? `<p${E(P + ".0", "Write something…")} data-para="${P}"></p>` : "");
+  const stackHTML = (st, P) => `<div class="stack"${P ? ` data-g="stack:${P}"` : ""}>${(st || []).map(([k, v]) => `<div><b>${esc(k)}</b><div>${v.map(x => `<span>${esc(x)}</span>`).join("")}</div></div>`).join("")}${P && ED() && !(st || []).length ? `<div><b>Tools</b><div><span>Use the gear to add tools</span></div></div>` : ""}</div>`;
+  const viewBtn = v => v && v.href ? `<a class="btn-p" href="${esc(v.href)}" target="_blank" rel="noopener"><span>${esc(v.label || "View")}</span>${v.icon && I[v.icon] ? I[v.icon] : ""}${I.arrow}</a>` : "";
+  const R_ = (cls, inner, fade, B) => `<div class="cs"${B ? ` data-b="${B.path}"${LI(B.list, B.i, "block")}` : ""}><div class="${fade ? "reveal-fade" : "reveal"}">${`<div class="${cls}">${inner}</div>`}</div></div>`;
 
-  function blockHTML(b) {
+  function blockHTML(b, i, P) {
+    const B = P ? { path: `${P}.blocks.${i}`, list: `${P}.blocks`, i } : null, bp = B ? B.path : "";
+    const e = (k, ph) => B ? E(`${bp}.${k}`, ph) : "";
     switch (b.type) {
-      case "mission": return R_("cs-mission", `<div class="l"><p class="lbl">${esc(b.label || "The Mission")}</p><p class="st">${md(b.statement)}</p></div><div class="cs-prose">${paras(b.body)}</div>`);
-      case "divider": return R_("cs-div", `<div class="hline"></div>`);
-      case "feature": return R_("cs-feature", `<div class="l"><div class="hd"><p class="lbl">${esc(b.label || "")}</p><h3>${md(b.title)}</h3>${b.subtitle ? `<p>${md(b.subtitle)}</p>` : ""}</div>
-          ${b.image !== undefined ? `<div class="pic"><div class="tw ptr" data-lb="1">${media({ image: b.image, hue: 280 })}</div></div>` : ""}</div>
-        <div class="r">${b.people ? `<div class="ppl"><p class="lbl">${esc(b.sideLabel || "Team")}</p><div style="display:flex;flex-direction:column">${b.people.map(p => `<div><a href="${esc(p.href || "#")}"${ext(p.href)}>${esc(p.name)}</a></div>`).join("")}</div></div>` : ""}
-          <div class="body">${paras(b.body)}</div></div>`);
-      case "text": return R_("cs-text", `<div class="l"><p class="lbl">${esc(b.label || "")}</p>${b.title ? `<h3>${md(b.title)}</h3>` : ""}</div><div class="cs-prose">${paras(b.body)}</div>`);
-      case "callout": return R_("cs-call", `<div class="panel"><div class="in"><div class="ic">${esc(b.emoji || "✦")}</div><div class="tx"><p>${md(b.text)}</p>${b.sub ? `<p>${md(b.sub)}</p>` : ""}</div></div></div>`);
-      case "gallery": return R_("cs-gal", `<div class="g">${(b.images || []).map((im, i) => media({ ...im, hue: im.hue ?? 20 + i * 60 }, "ptr", "", "")).join("")}</div>${b.caption ? `<p>${md(b.caption)}</p>` : ""}`);
-      case "image": return R_("cs-img", `${media({ image: b.image, video: b.video, hue: b.hue ?? 200 }, "", `aspect-ratio:${b.ratio || 1.85}`)}${b.caption ? `<p>${md(b.caption)}</p>` : ""}`);
+      case "mission": return R_("cs-mission", `<div class="l"><p class="lbl"${e("label", "Label")}>${esc(b.label ?? "The Mission")}</p><p class="st"${e("statement", "One sentence on what you set out to do")}>${md(b.statement)}</p></div><div class="cs-prose">${paras(b.body, B && bp + ".body")}</div>`, 0, B);
+      case "divider": return R_("cs-div", `<div class="hline"></div>`, 0, B);
+      case "feature": return R_("cs-feature", `<div class="l"><div class="hd"><p class="lbl"${e("label", "Label")}>${esc(b.label || "")}</p><h3${e("title", "A result you're proud of")}>${md(b.title)}</h3>${show(b.subtitle) ? `<p${e("subtitle", "Optional detail")}>${md(b.subtitle)}</p>` : ""}</div>
+          ${b.image !== undefined || b.video ? `<div class="pic"><div class="tw ptr" data-lb="1">${media({ image: b.image, video: b.video, poster: b.poster, vAuto: b.vAuto, vLoop: b.vLoop, vSound: b.vSound, vHover: b.vHover, hue: 280 }, "", "", "", bp)}</div></div>` : ""}</div>
+        <div class="r">${b.people || (B && ED()) ? `<div class="ppl"><p class="lbl"${e("sideLabel", "Team")}>${esc(b.sideLabel || "Team")}</p><div style="display:flex;flex-direction:column"${B ? LC(bp + ".people") : ""}>${(b.people || []).map((p, k) => `<div${B ? LI(bp + ".people", k, "person") : ""}><a href="${esc(p.href || "#")}"${ext(p.href)}${e(`people.${k}.name`, "Name")}>${esc(p.name)}</a></div>`).join("")}</div></div>` : ""}
+          <div class="body">${paras(b.body, B && bp + ".body")}</div></div>`, 0, B);
+      case "text": return R_("cs-text", `<div class="l"><p class="lbl"${e("label", "Label")}>${esc(b.label || "")}</p>${show(b.title) ? `<h3${e("title", "Heading")}>${md(b.title)}</h3>` : ""}</div><div class="cs-prose">${paras(b.body, B && bp + ".body")}</div>`, 0, B);
+      case "callout": return R_("cs-call", `<div class="panel"><div class="in"><div class="ic"${e("emoji", "✦")}>${esc(b.emoji || "✦")}</div><div class="tx"><p${e("text", "A short note")}>${md(b.text)}</p>${show(b.sub) ? `<p${e("sub", "Optional second line")}>${md(b.sub)}</p>` : ""}</div></div></div>`, 0, B);
+      case "gallery": return R_("cs-gal", `<div class="g" data-n="${(b.images || []).length}"${B ? LC(bp + ".images") : ""}>${(b.images || []).map((im, k) => `<div class="gi"${B ? LI(bp + ".images", k) : ""}>${media({ ...im, hue: im.hue ?? 20 + k * 60 }, "ptr", "", "", B ? `${bp}.images.${k}` : "")}</div>`).join("")}</div>${show(b.caption) ? `<p${e("caption", "Caption")}>${md(b.caption)}</p>` : ""}`, 0, B);
+      case "image": return R_("cs-img", `${media({ image: b.image, video: b.video, poster: b.poster, vAuto: b.vAuto, vLoop: b.vLoop, vSound: b.vSound, vHover: b.vHover, hue: b.hue ?? 200 }, "", `aspect-ratio:${b.ratio || 1.85}`, "", bp)}${show(b.caption) ? `<p${e("caption", "Caption")}>${md(b.caption)}</p>` : ""}`, 0, B);
       default: return "";
     }
   }
@@ -417,29 +477,32 @@
         <div class="t"><span>${esc(x.title)} <i>• ${esc(x.year)}</i></span><p>${esc(x.description || "")}</p></div></a>`).join("")}</div></div></div></div>`;
   }
   function caseHTML(p) {
-    return `<div class="pm-body swap">
-      <div class="cs"><div class="cs-head">
-        <div class="reveal-fade"><div class="cs-logo ${p.logo ? "" : "ph"}" style="--h:${p.hue ?? 260}">${p.logo ? `<img src="${esc(p.logo)}" alt="">` : esc(p.title[0])}</div></div>
-        <div class="cs-tm"><div class="reveal-fade"><h1 class="cs-title">${esc(p.title)}</h1></div>
-          <div class="cs-facts">${(p.facts || []).map(([k, v], i) => `<div class="reveal-fade" style="${d(i, .05)}"><b>${esc(k)}</b><span>${md(v)}</span></div>`).join("")}</div></div>
+    const P = "projects." + ix(S.projects, p);
+    return `<div class="pm-body swap" data-pb="${P}">
+      <div class="cs" data-cshead><div class="cs-head">
+        <div class="reveal-fade"><div class="cs-logo ${p.logo ? "" : "ph"}" style="--h:${p.hue ?? 260}" data-m="${P}|logo" data-msmall>${p.logo ? `<img src="${esc(p.logo)}" alt="">` : esc((p.title || "?")[0])}</div></div>
+        <div class="cs-tm"><div class="reveal-fade"><h1 class="cs-title"${E(P + ".title", "Project title")}>${esc(p.title)}</h1></div>
+          <div class="cs-facts"${LC(P + ".facts")}>${(p.facts || []).map(([k, v], i) => `<div class="reveal-fade" style="${d(i, .05)}"${LI(P + ".facts", i)}><b${E(`${P}.facts.${i}.0`, "Label")}>${esc(k)}</b><span${E(`${P}.facts.${i}.1`, "Value")}>${md(v)}</span></div>`).join("")}</div></div>
         <div class="reveal-fade"><div class="hline"></div></div>
-        <div class="reveal"><div class="cs-hero">${media(p)}</div></div>
+        <div class="reveal"><div class="cs-hero">${media(p, "", "", "", P)}</div></div>
       </div></div>
-      ${(p.blocks || []).map(blockHTML).join("")}
+      ${(p.blocks || []).map((b, i) => blockHTML(b, i, P)).join("")}
       ${alsoHTML(p)}
     </div>`;
   }
   function sideHTML_(p) {
-    return `<div class="pm-body swap" style="padding:0"><div class="sp"><div class="sp-in">
-      <header class="sp-head"><div class="sp-t"><h1>${esc(p.title)} <i>•</i> <i>${esc(p.year)}</i></h1>${p.description ? `<p>${md(p.description)}</p>` : ""}</div>
+    const P = "projects." + ix(S.projects, p);
+    return `<div class="pm-body swap" style="padding:0" data-pb="${P}"><div class="sp"><div class="sp-in">
+      <header class="sp-head"><div class="sp-t"><h1><span${E(P + ".title", "Title")}>${esc(p.title)}</span> <i>•</i> <i${E(P + ".year", "Year")}>${esc(p.year)}</i></h1>${show(p.description) ? `<p${E(P + ".description", "A one-line description")}>${md(p.description)}</p>` : ""}</div>
         <div class="sp-act">${p.site ? `<a class="ic-btn" href="${esc(p.site)}" target="_blank" rel="noopener" aria-label="${esc(host(p.site))}" data-tip="${esc(host(p.site))}">${I.chain}</a>` : ""}${viewBtn(p.viewOn)}</div></header>
-      <div class="sp-meta"><div class="hline"></div>${stackHTML(p.stack)}</div>
-      ${[p.preview || {}, ...(p.more || [])].map((m, i) => `<div class="sp-media">${media({ ...m, hue: m.hue ?? (p.hue ?? 200) + i * 30 }, "", `aspect-ratio:${m.ratio || 3248 / 2160}`)}</div>`).join("")}
+      <div class="sp-meta"><div class="hline"></div>${stackHTML(p.stack, P)}</div>
+      <div class="sp-media">${media({ ...(p.preview || {}), hue: (p.preview || {}).hue ?? (p.hue ?? 200) }, "", `aspect-ratio:${(p.preview || {}).ratio || 3248 / 2160}`, "", P + ".preview")}</div>
+      <div style="display:contents"${LC(P + ".more")}>${(p.more || []).map((m, i) => `<div class="sp-media"${LI(P + ".more", i)}>${media({ ...m, hue: m.hue ?? (p.hue ?? 200) + (i + 1) * 30 }, "", `aspect-ratio:${m.ratio || 3248 / 2160}`, "", `${P}.more.${i}`)}</div>`).join("")}</div>
     </div></div></div>`;
   }
   function embedHTML(p) {
     return `<div class="em-wrap">${p.embed ? `<iframe src="${esc(p.embed)}" title="${esc(p.title)}" loading="lazy" allow="fullscreen; clipboard-write"></iframe>`
-      : `<div class="em-empty">${media(p)}<p>Set <b>embed</b> for “${esc(p.title)}” in content.js to show your live project here.</p></div>`}</div>`;
+      : `<div class="em-empty">${media(p)}<p>${ED() ? `Add the link to your live project with the <b>gear</b> at the top left to show it here.` : `This live project will appear here soon.`}</p></div>`}</div>`;
   }
   function popHTML(p) {
     return `<div class="pop"><div class="pop-in">
@@ -490,6 +553,8 @@
   }
   function fill(p) {
     const main = pm.el.querySelector(".pm-main");
+    pm.el.classList.toggle("embed", p.type === "embed");
+    pm.el.classList.toggle("slow", p.type !== "case");
     pm.el.querySelector(".pm-tr").style.display = p.type === "embed" ? "" : "none";
     togglePop(false);
     if (p.type === "embed") main.innerHTML = embedHTML(p);
@@ -498,6 +563,7 @@
     if (sc) { let t; sc.addEventListener("scroll", () => { sc.classList.add("scrolling"); clearTimeout(t); t = setTimeout(() => sc.classList.remove("scrolling"), 900); }, { passive: true }); }
     wireMedia(main); wireReveal(main);
     pm.el.querySelector(".pm-card").setAttribute("aria-label", p.title);
+    document.dispatchEvent(new Event("app:project"));
   }
   function togglePop(force) {
     if (!pm) return;
@@ -583,7 +649,7 @@
   const TG = () => $("#tag"), BN = () => $("#born");
   let current = null;
   function setTagline(route, first) {
-    const html = S.tagline[route].map(md).join("<br>");
+    const html = (S.tagline[route] || []).map((l, i) => `<span${E(`tagline.${route}.${i}`, "Tagline")}>${md(l)}</span>`).join("<br>");
     const tag = TG(), born = BN();
     if (first) { tag.innerHTML = html; born.hidden = route !== "art"; return; }
     tag.classList.add("swap");
@@ -637,19 +703,33 @@
   applyHash(true);
   window.APP = {
     get site() { return S; },
-    refresh(next) {
+    refresh(next, opts) {
       if (next) S = next;
-      const y = scrollY, r = current, open = pm && pm.slug, full = pm && pm.el.classList.contains("full");
-      renderShell();
-      current = null;
-      if (pm) { pm.el.remove(); pm = null; }
-      go(r, true);
-      if (r !== "design-system") { moveInd(r, true); }
-      $$(".reveal,.reveal-fade").forEach(el => el.classList.add("in"));
-      window.scrollTo(0, y);
-      if (open) openProject(open, full, r);
+      opts = opts || {};
+      const y = scrollY, r = current, root = document.documentElement;
+      root.classList.add("quiet"); clearTimeout(this._q); this._q = setTimeout(() => root.classList.remove("quiet"), 120);
+      if (opts.slug && pm) pm.slug = opts.slug;
+      if (!opts.modalOnly) {
+        renderShell();
+        current = null;
+        go(r, true);
+        if (r !== "design-system") { moveInd(r, true); }
+        $$("#view .reveal, #view .reveal-fade, #footer .reveal, #footer .reveal-fade").forEach(el => el.classList.add("in"));
+        window.scrollTo(0, y);
+      }
+      if (pm) {
+        const p = S.projects.find(x => x.slug === pm.slug);
+        if (!p || p.type === "link") { closeProject(); }
+        else {
+          const sc = pm.el.querySelector(".pm-scroll"), st = sc ? sc.scrollTop : 0;
+          fill(p);
+          const sc2 = pm.el.querySelector(".pm-scroll"); if (sc2) sc2.scrollTop = st;
+          $$(".reveal,.reveal-fade", pm.el).forEach(el => el.classList.add("in"));
+        }
+      }
+      document.dispatchEvent(new Event("app:render"));
     },
-    route: () => current, project: () => pm && pm.slug
+    route: () => current, project: () => pm && pm.slug, el: () => pm && pm.el, md, vlink, media, wireMedia
   };
   document.dispatchEvent(new Event("app:ready"));
   // fonts can shift tab widths: re-measure once loaded
